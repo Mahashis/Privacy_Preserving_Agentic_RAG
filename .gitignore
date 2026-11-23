@@ -1,0 +1,38 @@
+# Privacy-Preserving Agentic RAG - Git Ignore
+
+# Environment variables (contains API keys)
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Vector database (can be regenerated)
+chroma_db/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Streamlit
+.streamlit/
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/

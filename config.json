@@ -1,0 +1,60 @@
+{
+  "paths": {
+    "data_dir": "data",
+    "chroma_dir": "chroma_db",
+    "src_dir": "src"
+  },
+  "ingestion": {
+    "embedding_model": "nomic-embed-text",
+    "chunk_size": 1000,
+    "chunk_overlap": 200,
+    "text_splitter_separators": ["\n\n", "\n", " ", ""]
+  },
+  "retrieval": {
+    "top_k": 5,
+    "embedding_model": "nomic-embed-text"
+  },
+  "models": {
+    "local_llm_model": "qwen2.5:7b",
+    "cloud_llm_model": "gemini-1.5-flash",
+    "embedding_model": "nomic-embed-text"
+  },
+  "cloud_providers": {
+    "gemini": {
+      "model": "gemini-1.5-flash",
+      "api_key_env": "GEMINI_API_KEY"
+    },
+    "openai": {
+      "model": "gpt-4o-mini",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  },
+  "pii_masking": {
+    "entity_types": [
+      "PERSON",
+      "EMAIL",
+      "PHONE",
+      "ADDRESS",
+      "ORGANIZATION",
+      "DATE",
+      "SSN",
+      "CREDIT_CARD",
+      "BANK_ACCOUNT",
+      "MEDICAL_RECORD",
+      "IP_ADDRESS",
+      "USERNAME",
+      "LICENSE_PLATE",
+      "PASSPORT",
+      "DRIVER_LICENSE"
+    ],
+    "token_format": "[{entity_type}_{index}]",
+    "output_format": "json"
+  },
+  "streamlit": {
+    "page_title": "Privacy-Preserving Agentic RAG",
+    "page_icon": "🔒",
+    "layout": "wide",
+    "initial_sidebar_state": "expanded",
+    "ollama_base_url": "http://localhost:11434"
+  }
+}
