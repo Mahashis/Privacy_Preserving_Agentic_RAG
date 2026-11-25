@@ -7,6 +7,7 @@ Features:
 - Collapsible Privacy Audit panel showing PII masking details
 """
 
+import re
 import streamlit as st
 import os
 from pathlib import Path
@@ -96,8 +97,8 @@ def check_setup():
         issues.append("Vector database not found. Run `python src/ingest.py` to ingest documents.")
     
     # Check API keys
-    if not os.getenv("GEMINI_API_KEY") and not os.getenv("OPENAI_API_KEY"):
-        issues.append("No cloud API key found. Set `GEMINI_API_KEY` or `OPENAI_API_KEY` in `.env` file.")
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("OPENAI_API_KEY") and not os.getenv("NVIDIA_API_KEY"):
+        issues.append("No cloud API key found. Set `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `NVIDIA_API_KEY` in `.env` file.")
     
     return issues
 
@@ -134,11 +135,20 @@ def display_privacy_audit(audit: dict):
             st.markdown(f"**Cloud Model:** {audit.get('cloud_model', 'N/A')}")
         
         st.markdown("---")
+        # Determine cloud provider name for display
+        cloud_provider_name = "Gemini/GPT"
+        if os.getenv("NVIDIA_API_KEY"):
+            cloud_provider_name = "NVIDIA Nemotron-3 Ultra"
+        elif os.getenv("GEMINI_API_KEY"):
+            cloud_provider_name = "Google Gemini"
+        elif os.getenv("OPENAI_API_KEY"):
+            cloud_provider_name = "OpenAI GPT"
+        
         st.markdown("**How it works:**")
-        st.markdown("""
+        st.markdown(f"""
         1. **Local Retrieval**: Relevant document chunks retrieved from local ChromaDB
         2. **Local PII Masking**: Local LLM (qwen2.5:7b) identifies and masks PII with tokens
-        3. **Cloud Synthesis**: Masked context sent to cloud LLM (Gemini/GPT) for answer generation
+        3. **Cloud Synthesis**: Masked context sent to cloud LLM ({cloud_provider_name}) for answer generation
         4. **Local De-anonymization**: Local LLM restores original PII values in the final answer
         """)
         
@@ -176,7 +186,7 @@ def main():
                     st.success("✅ qwen2.5:7b available")
                 else:
                     st.warning("⚠️ qwen2.5:7b not pulled")
-                if "nomic-embed-text" in model_names:
+                if any(re.match(r"^nomic-embed-text(:|$)", m) for m in model_names):
                     st.success("✅ nomic-embed-text available")
                 else:
                     st.warning("⚠️ nomic-embed-text not pulled")
@@ -186,11 +196,20 @@ def main():
             st.error("❌ Ollama not running")
         
         st.markdown("---")
+        # Determine cloud provider
+        cloud_provider = "Unknown"
+        if os.getenv("GEMINI_API_KEY"):
+            cloud_provider = "Google Gemini"
+        elif os.getenv("NVIDIA_API_KEY"):
+            cloud_provider = "NVIDIA Nemotron-3 Ultra"
+        elif os.getenv("OPENAI_API_KEY"):
+            cloud_provider = "OpenAI"
+        
         st.markdown("### Architecture")
         st.markdown(f"""
         - **Local**: Ollama ({config.local_llm_model}, {config.embedding_model})
         - **Vector DB**: ChromaDB (local)
-        - **Cloud**: {config.cloud_llm_model}
+        - **Cloud**: {cloud_provider} ({config.cloud_llm_model})
         - **Orchestration**: LangGraph
         - **UI**: Streamlit
         """)

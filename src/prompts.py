@@ -7,6 +7,22 @@ Contains system and user prompt templates for:
 - Local de-anonymization
 """
 
+# Prompt for query expansion - split complex question into focused sub-queries
+QUERY_EXPANSION_PROMPT = """You are a query expansion system. Given a user's complex question, split it into 2-3 focused search queries that together cover all aspects of the original question.
+
+Return a JSON array of strings (2-3 queries). Each query should be concise and target a specific aspect.
+
+Example:
+Input: "What is Elena Rostova's base salary, target bonus, and retention grant RSU vesting schedule policy?"
+Output: [
+  "Elena Rostova base salary target bonus",
+  "retention grant RSU vesting schedule policy"
+]
+
+User Question: {question}
+
+Search Queries:"""
+
 # Prompt for generating retrieval queries (optional enhancement)
 RETRIEVAL_QUERY_PROMPT = """Given the user's question, generate an optimized search query for retrieving relevant documents from a vector database.
 
@@ -15,12 +31,16 @@ User Question: {question}
 Optimized Search Query:"""
 
 
-# Prompt for local PII masking using structured output
-PII_MASKING_PROMPT = """You are a privacy protection system. Your task is to identify and mask all Personally Identifiable Information (PII) in the provided text.
+# Prompt for local PII extraction - LLM only extracts unique PII strings with types
+PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify all Personally Identifiable Information (PII) in the provided text.
 
-Replace each PII entity with a unique token in the format [ENTITY_TYPE_N] where N is an incrementing number (e.g., [PERSON_1], [EMAIL_2], [PHONE_1], [ADDRESS_1], [ORGANIZATION_1], [DATE_1], [SSN_1], [CREDIT_CARD_1], etc.).
+Extract each unique PII entity and its type. Return a JSON array of objects, each with:
+- "value": The exact PII string as it appears in the text
+- "type": The PII type (PERSON, EMAIL, PHONE, ADDRESS, ORGANIZATION, DATE, SSN, CREDIT_CARD, BANK_ACCOUNT, MEDICAL_RECORD, IP_ADDRESS, USERNAME, LICENSE_PLATE, PASSPORT, DRIVER_LICENSE)
 
-PII types to detect and mask:
+Only return unique values (deduplicate identical strings). Order by first appearance in text.
+
+PII types to detect:
 - PERSON: Names of people
 - EMAIL: Email addresses
 - PHONE: Phone numbers
@@ -37,23 +57,15 @@ PII types to detect and mask:
 - PASSPORT: Passport numbers
 - DRIVER_LICENSE: Driver's license numbers
 
-Return a JSON object with:
-- "masked_text": The text with all PII replaced by tokens
-- "pii_map": A dictionary mapping each token to its original value
+Return ONLY a JSON array. Example:
+[
+  {{"value": "John Smith", "type": "PERSON"}},
+  {{"value": "Acme Corp", "type": "ORGANIZATION"}},
+  {{"value": "john.smith@acme.com", "type": "EMAIL"}},
+  {{"value": "555-123-4567", "type": "PHONE"}}
+]
 
-Example:
-Input: "John Smith from Acme Corp can be reached at john.smith@acme.com or 555-123-4567."
-Output: {{
-  "masked_text": "[PERSON_1] from [ORGANIZATION_1] can be reached at [EMAIL_1] or [PHONE_1].",
-  "pii_map": {{
-    "[PERSON_1]": "John Smith",
-    "[ORGANIZATION_1]": "Acme Corp",
-    "[EMAIL_1]": "john.smith@acme.com",
-    "[PHONE_1]": "555-123-4567"
-  }}
-}}
-
-Context to mask:
+Context to analyze:
 {context}"""
 
 

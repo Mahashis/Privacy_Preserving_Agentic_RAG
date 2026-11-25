@@ -16,7 +16,7 @@
   },
   "models": {
     "local_llm_model": "qwen2.5:7b",
-    "cloud_llm_model": "gemini-1.5-flash",
+      "cloud_llm_model": "nvidia/nemotron-3-ultra-550b-a55b",
     "embedding_model": "nomic-embed-text"
   },
   "cloud_providers": {
@@ -27,6 +27,11 @@
     "openai": {
       "model": "gpt-4o-mini",
       "api_key_env": "OPENAI_API_KEY"
+      },
+      "nvidia": {
+              "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "api_key_env": "NVIDIA_API_KEY",
+        "base_url": "https://integrate.api.nvidia.com/v1"
     }
   },
   "pii_masking": {
