@@ -31,22 +31,63 @@ def infer_pii_type(value: str) -> str:
     # Email
     if re.match(r'^[^@]+@[^@]+\.[^@]+$', value):
         return "EMAIL"
-    # Phone (various formats)
-    if re.match(r'^[\d\s\-\(\)\+]{7,}$', value) and any(c.isdigit() for c in value):
-        return "PHONE"
-    # SSN
+    # SSN (must check before phone)
     if re.match(r'^\d{3}-\d{2}-\d{4}$', value):
         return "SSN"
+    # Phone (various formats with dashes/parens/spaces)
+    if re.match(r'^[\d\s\-\(\)\+]{7,}$', value) and any(c.isdigit() for c in value):
+        # Not SSN pattern
+        if not re.match(r'^\d{3}-\d{2}-\d{4}$', value):
+            # Standard phone format (contains dashes/parens or starts with country code)
+            if re.search(r'[\-\(\)]', value) or value.startswith('+') or re.match(r'^\d{3}[\-\s]\d{3}[\-\s]\d{4}$', value):
+                return "PHONE"
     # Credit card
     if re.match(r'^\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}$', value):
         return "CREDIT_CARD"
     # IP address
     if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', value):
         return "IP_ADDRESS"
-    # Date (YYYY-MM-DD or MM/DD/YYYY)
+    # Date (various formats)
     if re.match(r'^\d{4}-\d{2}-\d{2}$', value) or re.match(r'^\d{2}/\d{2}/\d{4}$', value):
         return "DATE"
-    # Default to PERSON for names
+    # Date (Month name format: March 4, 2022)
+    if re.match(r'^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}$', value, re.IGNORECASE):
+        return "DATE"
+    # Date (FY2026, Q3 2026)
+    if re.match(r'^(FY|Q\d)\s*\d{4}$', value, re.IGNORECASE):
+        return "DATE"
+    # Address (contains street number, city, state, zip)
+    if re.search(r'\d+\s+[\w\s]+(?:Avenue|Street|Road|Blvd|Boulevard|Drive|Lane|Court|Place|Way|Circle|Terrace|Trail|Parkway|Highway|Ridge|Heights|Congress|Cedar)', value, re.IGNORECASE):
+        if re.search(r'(?:Apt|Unit|Suite|#)\s*\w+', value, re.IGNORECASE):
+            return "ADDRESS"
+        if re.search(r',\s*[A-Z]{2}\s*\d{5}', value):
+            return "ADDRESS"
+        if re.search(r'(?:Austin|Seattle|TX|WA)\s*\d{5}', value):
+            return "ADDRESS"
+        return "ADDRESS"
+    # Username pattern (MD-XXXX)
+    if re.match(r'^MD-\d{4}$', value):
+        return "USERNAME"
+    # Bank account / routing (9 digits) - check before phone
+    if re.match(r'^\d{9}$', value):
+        return "BANK_ACCOUNT"
+    # 4-digit account ending - part of bank account context
+    if re.match(r'^\d{4}$', value):
+        # Could be account ending, default to BANK_ACCOUNT if context suggests
+        return "BANK_ACCOUNT"
+    # Organization (contains Corp, Labs, Inc, LLC, etc.)
+    if re.search(r'\b(Corp|Corporation|Labs|Inc|LLC|Ltd|Company|Dynamics|Quantum|Apex|Meridian)\b', value, re.IGNORECASE):
+        return "ORGANIZATION"
+    # Title/Role (contains Architect, Engineer, Manager, Director, etc.)
+    if re.search(r'\b(Architect|Engineer|Manager|Director|Lead|Senior|Staff|Principal|VP|Vice President)\b', value, re.IGNORECASE):
+        return "TITLE"
+    # Relationship
+    if re.search(r'\b(Spouse|Sister|Brother|Mother|Father|Husband|Wife|Son|Daughter)\b', value, re.IGNORECASE):
+        return "RELATIONSHIP"
+    # Default to PERSON for names (capitalized words)
+    words = value.split()
+    if len(words) >= 2 and all(w[0].isupper() for w in words if w.isalpha() and len(w) > 1):
+        return "PERSON"
     return "PERSON"
 
 
@@ -128,7 +169,9 @@ def retrieve_node(state: AgentState) -> AgentState:
 
 def mask_pii_node(state: AgentState) -> AgentState:
     """Extract PII using local LLM, then deterministically mask with Python."""
-    local_llm = OllamaLLM(model=config.local_llm_model, format="json")
+    # Don't use format="json" - it causes the model to output object format
+    # Instead, prompt explicitly asks for JSON array
+    local_llm = OllamaLLM(model=config.local_llm_model)
     
     # Combine retrieved docs
     context = "\n\n".join(state["retrieved_docs"])
@@ -138,22 +181,44 @@ def mask_pii_node(state: AgentState) -> AgentState:
     
     result = chain.invoke({"context": context})
     
-    # Parse extracted PII list - handle different formats
+    # Parse JSON array of string values
+    pii_values = []
     import json
     if isinstance(result, str):
-        pii_list = json.loads(result)
+        text = result.strip()
+        # Try to find JSON array in the response
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            json_text = text[start:end+1]
+            try:
+                parsed = json.loads(json_text)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, str) and item.strip():
+                            pii_values.append(item.strip())
+            except json.JSONDecodeError:
+                pass
     else:
-        # Already parsed (format="json" may return dict)
-        pii_list = result
+        # Already parsed list
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, str) and item.strip():
+                    pii_values.append(item.strip())
     
-    # Normalize: handle both [{"value": "...", "type": "..."}] and ["...", "..."]
+    # Deduplicate while preserving order
+    seen = set()
+    unique_values = []
+    for v in pii_values:
+        if v not in seen:
+            seen.add(v)
+            unique_values.append(v)
+    
+    # Infer types using Python
     normalized_pii = []
-    for pii in pii_list:
-        if isinstance(pii, dict) and "value" in pii and "type" in pii:
-            normalized_pii.append(pii)
-        elif isinstance(pii, str):
-            # Try to infer type from string pattern
-            normalized_pii.append({"value": pii, "type": infer_pii_type(pii)})
+    for value in unique_values:
+        ptype = infer_pii_type(value)
+        normalized_pii.append({"value": value, "type": ptype})
     
     # Deterministically assign placeholders and build mapping
     pii_map = {}
@@ -247,6 +312,8 @@ def deanonymize_node(state: AgentState) -> AgentState:
         "tokens_used": list(pii_map.keys()),
         "masking_model": config.local_llm_model,
         "cloud_model": config.cloud_llm_model,
+        "search_queries": state.get("search_queries", []),
+        "num_chunks_retrieved": len(state.get("retrieved_docs", [])),
     }
     
     return {

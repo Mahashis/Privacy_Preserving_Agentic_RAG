@@ -12,12 +12,7 @@ QUERY_EXPANSION_PROMPT = """You are a query expansion system. Given a user's com
 
 Return a JSON array of strings (2-3 queries). Each query should be concise and target a specific aspect.
 
-Example:
-Input: "What is Elena Rostova's base salary, target bonus, and retention grant RSU vesting schedule policy?"
-Output: [
-  "Elena Rostova base salary target bonus",
-  "retention grant RSU vesting schedule policy"
-]
+Return ONLY the JSON array. No explanations, no markdown, no examples. If unable to expand, return [].
 
 User Question: {question}
 
@@ -31,39 +26,12 @@ User Question: {question}
 Optimized Search Query:"""
 
 
-# Prompt for local PII extraction - LLM only extracts unique PII strings with types
-PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify all Personally Identifiable Information (PII) in the provided text.
+# Prompt for local PII extraction - LLM only extracts unique PII strings (Python infers types)
+PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify ALL Personally Identifiable Information (PII) in the provided text.
 
-Extract each unique PII entity and its type. Return a JSON array of objects, each with:
-- "value": The exact PII string as it appears in the text
-- "type": The PII type (PERSON, EMAIL, PHONE, ADDRESS, ORGANIZATION, DATE, SSN, CREDIT_CARD, BANK_ACCOUNT, MEDICAL_RECORD, IP_ADDRESS, USERNAME, LICENSE_PLATE, PASSPORT, DRIVER_LICENSE)
+Find EVERY person name, organization, date, email, phone, SSN, address, username, bank account, credit card, medical record, IP address, license plate, passport, driver license, etc. Return a JSON array of unique string values. Do NOT include types.
 
-Only return unique values (deduplicate identical strings). Order by first appearance in text.
-
-PII types to detect:
-- PERSON: Names of people
-- EMAIL: Email addresses
-- PHONE: Phone numbers
-- ADDRESS: Physical addresses
-- ORGANIZATION: Company/organization names
-- DATE: Specific dates (not general time references)
-- SSN: Social Security Numbers
-- CREDIT_CARD: Credit card numbers
-- BANK_ACCOUNT: Bank account numbers
-- MEDICAL_RECORD: Medical record numbers
-- IP_ADDRESS: IP addresses
-- USERNAME: Usernames/handles
-- LICENSE_PLATE: Vehicle license plates
-- PASSPORT: Passport numbers
-- DRIVER_LICENSE: Driver's license numbers
-
-Return ONLY a JSON array. Example:
-[
-  {{"value": "John Smith", "type": "PERSON"}},
-  {{"value": "Acme Corp", "type": "ORGANIZATION"}},
-  {{"value": "john.smith@acme.com", "type": "EMAIL"}},
-  {{"value": "555-123-4567", "type": "PHONE"}}
-]
+Return ONLY the JSON array. No explanations, no markdown, no extra text. No examples.
 
 Context to analyze:
 {context}"""
