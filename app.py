@@ -100,9 +100,12 @@ def check_setup():
     if not config.chroma_dir.exists() or not list(config.chroma_dir.iterdir()):
         issues.append("Vector database not found. Run `python src/ingest.py` to ingest documents.")
     
-    # Check API keys
-    if not os.getenv("GEMINI_API_KEY") and not os.getenv("OPENAI_API_KEY") and not os.getenv("NVIDIA_API_KEY"):
-        issues.append("No cloud API key found. Set `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `NVIDIA_API_KEY` in `.env` file.")
+    # Check API keys based on config
+    cloud_providers = config.get("cloud_providers", {})
+    required_keys = [v.get("api_key_env") for v in cloud_providers.values() if v.get("api_key_env")]
+    has_key = any(os.getenv(k) for k in required_keys)
+    if not has_key:
+        issues.append(f"No cloud API key found. Set one of: {', '.join(required_keys)} in `.env` file.")
     
     return issues
 
@@ -139,21 +142,21 @@ def display_privacy_audit(audit: dict):
             st.markdown(f"**Cloud Model:** {audit.get('cloud_model', 'N/A')}")
         
         st.markdown("---")
-        # Determine cloud provider name for display
-        cloud_provider_name = "Gemini/GPT"
-        if os.getenv("NVIDIA_API_KEY"):
-            cloud_provider_name = "NVIDIA Nemotron-3 Ultra"
-        elif os.getenv("GEMINI_API_KEY"):
-            cloud_provider_name = "Google Gemini"
-        elif os.getenv("OPENAI_API_KEY"):
-            cloud_provider_name = "OpenAI GPT"
+        # Determine cloud provider name from config
+        cloud_provider_name = "Cloud LLM"
+        for provider in config.cloud_provider_priority:
+            provider_config = config.get(f"cloud_providers.{provider}", {})
+            api_key_env = provider_config.get("api_key_env")
+            if api_key_env and os.getenv(api_key_env):
+                cloud_provider_name = provider_config.get("display_name", provider.title())
+                break
         
         st.markdown("**How it works:**")
         st.markdown(f"""
         1. **Local Retrieval**: Relevant document chunks retrieved from local ChromaDB
-        2. **Local PII Masking**: Local LLM (qwen2.5:7b) identifies and masks PII with tokens
+        2. **Local PII Masking**: Local LLM ({config.local_llm_model}) identifies and masks PII with tokens
         3. **Cloud Synthesis**: Masked context sent to cloud LLM ({cloud_provider_name}) for answer generation
-        4. **Local De-anonymization**: Local LLM restores original PII values in the final answer
+        4. **Local De-anonymization**: Deterministic Python restoration replaces tokens with original PII values
         """)
         
         st.info("🛡️ **Privacy Guarantee**: Raw PII never leaves your machine. Only tokenized context is sent to the cloud.")
@@ -186,32 +189,40 @@ def main():
                 st.success("✅ Ollama running")
                 models = response.json().get("models", [])
                 model_names = [m["name"] for m in models]
-                if "qwen2.5:7b" in model_names:
-                    st.success("✅ qwen2.5:7b available")
+                
+                # Check local LLM model from config
+                local_llm_model = config.local_llm_model
+                if local_llm_model in model_names:
+                    st.success(f"✅ {local_llm_model} available")
                 else:
-                    st.warning("⚠️ qwen2.5:7b not pulled")
-                if any(re.match(r"^nomic-embed-text(:|$)", m) for m in model_names):
-                    st.success("✅ nomic-embed-text available")
+                    st.warning(f"⚠️ {local_llm_model} not pulled")
+                
+                # Check embedding model from config
+                embedding_model = config.retrieval_embedding_model
+                if any(re.match(rf"^{re.escape(embedding_model)}(:|$)", m) for m in model_names):
+                    st.success(f"✅ {embedding_model} available")
                 else:
-                    st.warning("⚠️ nomic-embed-text not pulled")
+                    st.warning(f"⚠️ {embedding_model} not pulled")
             else:
                 st.error("❌ Ollama not responding")
         except:
             st.error("❌ Ollama not running")
         
         st.markdown("---")
-        # Determine cloud provider
+        # Determine cloud provider from config priority
         cloud_provider = "Unknown"
-        if os.getenv("GEMINI_API_KEY"):
-            cloud_provider = "Google Gemini"
-        elif os.getenv("NVIDIA_API_KEY"):
-            cloud_provider = "NVIDIA Nemotron-3 Ultra"
-        elif os.getenv("OPENAI_API_KEY"):
-            cloud_provider = "OpenAI"
+        cloud_provider_config = None
+        for provider in config.cloud_provider_priority:
+            provider_config = config.get(f"cloud_providers.{provider}", {})
+            api_key_env = provider_config.get("api_key_env")
+            if api_key_env and os.getenv(api_key_env):
+                cloud_provider = provider_config.get("display_name", provider.title())
+                cloud_provider_config = provider_config
+                break
         
         st.markdown("### Architecture")
         st.markdown(f"""
-        - **Local**: Ollama ({config.local_llm_model}, {config.embedding_model})
+        - **Local**: Ollama ({config.local_llm_model}, {config.retrieval_embedding_model})
         - **Vector DB**: ChromaDB (local)
         - **Cloud**: {cloud_provider} ({config.cloud_llm_model})
         - **Orchestration**: LangGraph

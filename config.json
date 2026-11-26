@@ -12,26 +12,33 @@
   },
   "retrieval": {
     "top_k": 5,
+      "expansion_top_k": 4,
     "embedding_model": "nomic-embed-text"
   },
   "models": {
-    "local_llm_model": "qwen2.5:7b",
+      "local_llm_model": "qwen3:14b",
       "cloud_llm_model": "nvidia/nemotron-3-ultra-550b-a55b",
     "embedding_model": "nomic-embed-text"
   },
   "cloud_providers": {
     "gemini": {
       "model": "gemini-1.5-flash",
-      "api_key_env": "GEMINI_API_KEY"
+        "api_key_env": "GEMINI_API_KEY",
+        "display_name": "Google Gemini",
+        "temperature": 0
+      },
+      "nvidia": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "api_key_env": "NVIDIA_API_KEY",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "display_name": "NVIDIA Nemotron-3 Ultra",
+        "temperature": 0
     },
     "openai": {
       "model": "gpt-4o-mini",
-      "api_key_env": "OPENAI_API_KEY"
-      },
-      "nvidia": {
-              "model": "nvidia/nemotron-3-ultra-550b-a55b",
-        "api_key_env": "NVIDIA_API_KEY",
-        "base_url": "https://integrate.api.nvidia.com/v1"
+        "api_key_env": "OPENAI_API_KEY",
+        "display_name": "OpenAI GPT",
+        "temperature": 0
     }
   },
   "pii_masking": {
@@ -40,19 +47,16 @@
       "EMAIL",
       "PHONE",
       "ADDRESS",
-      "ORGANIZATION",
-      "DATE",
       "SSN",
       "CREDIT_CARD",
       "BANK_ACCOUNT",
       "MEDICAL_RECORD",
       "IP_ADDRESS",
-      "USERNAME",
       "LICENSE_PLATE",
       "PASSPORT",
       "DRIVER_LICENSE"
     ],
-    "token_format": "[{entity_type}_{index}]",
+      "token_format": "[{TYPE}_{N}]",
     "output_format": "json"
   },
   "streamlit": {

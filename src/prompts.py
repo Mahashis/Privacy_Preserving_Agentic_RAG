@@ -8,15 +8,15 @@ Contains system and user prompt templates for:
 """
 
 # Prompt for query expansion - split complex question into focused sub-queries
-QUERY_EXPANSION_PROMPT = """You are a query expansion system. Given a user's complex question, split it into 2-3 focused search queries that together cover all aspects of the original question.
+QUERY_EXPANSION_PROMPT = """Split this question into 2-3 focused search queries. 
+Rules:
+1. If the question asks about a specific person's compensation, leave, or transfer, create a query with their name and the specific facts needed.
+2. ALWAYS include at least one "step-back" policy query that completely removes the person's name and searches for the general company-wide rule, policy, or schedule
+Return JSON array only.
 
-Return a JSON array of strings (2-3 queries). Each query should be concise and target a specific aspect.
+Question: {question}
 
-Return ONLY the JSON array. No explanations, no markdown, no examples. If unable to expand, return [].
-
-User Question: {question}
-
-Search Queries:"""
+Queries:"""
 
 # Prompt for generating retrieval queries (optional enhancement)
 RETRIEVAL_QUERY_PROMPT = """Given the user's question, generate an optimized search query for retrieving relevant documents from a vector database.
@@ -26,10 +26,32 @@ User Question: {question}
 Optimized Search Query:"""
 
 
-# Prompt for local PII extraction - LLM only extracts unique PII strings (Python infers types)
+# Prompt for local PII extraction - LLM identifies PII and its type
+# Uses {entity_types} placeholder which will be filled from config
 PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify ALL Personally Identifiable Information (PII) in the provided text.
 
-Find EVERY person name, organization, date, email, phone, SSN, address, username, bank account, credit card, medical record, IP address, license plate, passport, driver license, etc. Return a JSON array of unique string values. Do NOT include types.
+Find EVERY occurrence of the following PII types: {entity_types}
+
+Return a JSON array of objects, each with "value" and "type" fields.
+
+Type Definitions:
+- PERSON: Full names of individuals (e.g., Elena Rostova, Marcus Vance)
+- ORGANIZATION: Company names, institutions, corp, labs, inc, etc.
+- DATE: Calendar dates, fiscal years (FY2026), quarters (Q3 2026), hire dates
+- EMAIL: Email addresses
+- PHONE: Phone numbers with dashes, parentheses, spaces
+- ADDRESS: Physical addresses with street, city, state, zip
+- SSN: Social Security Numbers (XXX-XX-XXXX format)
+- CREDIT_CARD: Credit card numbers
+- BANK_ACCOUNT: Bank routing numbers, account numbers
+- MEDICAL_RECORD: Medical record numbers
+- IP_ADDRESS: IP addresses
+- USERNAME: Employee IDs, usernames (e.g., MD-XXXX format)
+- LICENSE_PLATE: Vehicle license plates
+- PASSPORT: Passport numbers
+- DRIVER_LICENSE: Driver license numbers
+- TITLE: Job titles, roles (Architect, Engineer, Manager, Director, etc.)
+- RELATIONSHIP: Family relationships (Spouse, Sister, Brother, etc.)
 
 Return ONLY the JSON array. No explanations, no markdown, no extra text. No examples.
 
