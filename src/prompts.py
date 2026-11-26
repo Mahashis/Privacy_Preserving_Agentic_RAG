@@ -8,20 +8,15 @@ Contains system and user prompt templates for:
 """
 
 # Prompt for query expansion - split complex question into focused sub-queries
-QUERY_EXPANSION_PROMPT = """You are a query expansion system. Given a user's complex question, split it into 2-3 focused search queries that together cover all aspects of the original question.
+QUERY_EXPANSION_PROMPT = """Split this question into 2-3 focused search queries. 
+Rules:
+1. If the question asks about a specific person's compensation, leave, or transfer, create a query with their name and the specific facts needed.
+2. ALWAYS include at least one "step-back" policy query that completely removes the person's name and searches for the general company-wide rule, policy, or schedule
+Return JSON array only.
 
-Return a JSON array of strings (2-3 queries). Each query should be concise and target a specific aspect.
+Question: {question}
 
-Example:
-Input: "What is Elena Rostova's base salary, target bonus, and retention grant RSU vesting schedule policy?"
-Output: [
-  "Elena Rostova base salary target bonus",
-  "retention grant RSU vesting schedule policy"
-]
-
-User Question: {question}
-
-Search Queries:"""
+Queries:"""
 
 # Prompt for generating retrieval queries (optional enhancement)
 RETRIEVAL_QUERY_PROMPT = """Given the user's question, generate an optimized search query for retrieving relevant documents from a vector database.
@@ -31,39 +26,34 @@ User Question: {question}
 Optimized Search Query:"""
 
 
-# Prompt for local PII extraction - LLM only extracts unique PII strings with types
-PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify all Personally Identifiable Information (PII) in the provided text.
+# Prompt for local PII extraction - LLM identifies PII and its type
+# Uses {entity_types} placeholder which will be filled from config
+PII_EXTRACTION_PROMPT = """You are a privacy protection system. Your task is to identify ALL Personally Identifiable Information (PII) in the provided text.
 
-Extract each unique PII entity and its type. Return a JSON array of objects, each with:
-- "value": The exact PII string as it appears in the text
-- "type": The PII type (PERSON, EMAIL, PHONE, ADDRESS, ORGANIZATION, DATE, SSN, CREDIT_CARD, BANK_ACCOUNT, MEDICAL_RECORD, IP_ADDRESS, USERNAME, LICENSE_PLATE, PASSPORT, DRIVER_LICENSE)
+Find EVERY occurrence of the following PII types: {entity_types}
 
-Only return unique values (deduplicate identical strings). Order by first appearance in text.
+Return a JSON array of objects, each with "value" and "type" fields.
 
-PII types to detect:
-- PERSON: Names of people
+Type Definitions:
+- PERSON: Full names of individuals (e.g., Elena Rostova, Marcus Vance)
+- ORGANIZATION: Company names, institutions, corp, labs, inc, etc.
+- DATE: Calendar dates, fiscal years (FY2026), quarters (Q3 2026), hire dates
 - EMAIL: Email addresses
-- PHONE: Phone numbers
-- ADDRESS: Physical addresses
-- ORGANIZATION: Company/organization names
-- DATE: Specific dates (not general time references)
-- SSN: Social Security Numbers
+- PHONE: Phone numbers with dashes, parentheses, spaces
+- ADDRESS: Physical addresses with street, city, state, zip
+- SSN: Social Security Numbers (XXX-XX-XXXX format)
 - CREDIT_CARD: Credit card numbers
-- BANK_ACCOUNT: Bank account numbers
+- BANK_ACCOUNT: Bank routing numbers, account numbers
 - MEDICAL_RECORD: Medical record numbers
 - IP_ADDRESS: IP addresses
-- USERNAME: Usernames/handles
+- USERNAME: Employee IDs, usernames (e.g., MD-XXXX format)
 - LICENSE_PLATE: Vehicle license plates
 - PASSPORT: Passport numbers
-- DRIVER_LICENSE: Driver's license numbers
+- DRIVER_LICENSE: Driver license numbers
+- TITLE: Job titles, roles (Architect, Engineer, Manager, Director, etc.)
+- RELATIONSHIP: Family relationships (Spouse, Sister, Brother, etc.)
 
-Return ONLY a JSON array. Example:
-[
-  {{"value": "John Smith", "type": "PERSON"}},
-  {{"value": "Acme Corp", "type": "ORGANIZATION"}},
-  {{"value": "john.smith@acme.com", "type": "EMAIL"}},
-  {{"value": "555-123-4567", "type": "PHONE"}}
-]
+Return ONLY the JSON array. No explanations, no markdown, no extra text. No examples.
 
 Context to analyze:
 {context}"""

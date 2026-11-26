@@ -1,11 +1,12 @@
 """
 LangGraph workflow for Privacy-Preserving Agentic RAG.
 
-Defines the stateful workflow: local retrieval -> local PII masking (qwen2.5:7b with structured output)
+Defines the stateful workflow: local retrieval -> local PII masking (local LLM with structured output)
 -> cloud LLM synthesis -> deterministic local de-anonymization.
 """
 
 import os
+import logging
 from pathlib import Path
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
@@ -15,6 +16,17 @@ from langchain_community.vectorstores import Chroma
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 from .prompts import (
     RETRIEVAL_QUERY_PROMPT,
@@ -23,31 +35,6 @@ from .prompts import (
     QUERY_EXPANSION_PROMPT,
 )
 from .config_loader import config
-import re
-
-
-def infer_pii_type(value: str) -> str:
-    """Infer PII type from string pattern."""
-    # Email
-    if re.match(r'^[^@]+@[^@]+\.[^@]+$', value):
-        return "EMAIL"
-    # Phone (various formats)
-    if re.match(r'^[\d\s\-\(\)\+]{7,}$', value) and any(c.isdigit() for c in value):
-        return "PHONE"
-    # SSN
-    if re.match(r'^\d{3}-\d{2}-\d{4}$', value):
-        return "SSN"
-    # Credit card
-    if re.match(r'^\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}$', value):
-        return "CREDIT_CARD"
-    # IP address
-    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', value):
-        return "IP_ADDRESS"
-    # Date (YYYY-MM-DD or MM/DD/YYYY)
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', value) or re.match(r'^\d{2}/\d{2}/\d{4}$', value):
-        return "DATE"
-    # Default to PERSON for names
-    return "PERSON"
 
 
 class PIIMaskingResult(BaseModel):
@@ -79,19 +66,52 @@ def get_vectorstore():
 
 def expand_queries_node(state: AgentState) -> AgentState:
     """Expand complex question into 2-3 focused search queries using local LLM."""
-    local_llm = OllamaLLM(model=config.local_llm_model, format="json")
+    logger.info(f"Expanding query: {state['question']}")
+    local_llm = OllamaLLM(model=config.local_llm_model)
     
     prompt = ChatPromptTemplate.from_template(QUERY_EXPANSION_PROMPT)
     chain = prompt | local_llm
     
     result = chain.invoke({"question": state["question"]})
+    logger.debug(f"Query expansion raw result: {result}")
     
-    # Parse expanded queries
+    # Parse expanded queries - LLM may return array directly or object with "queries" key
     import json
     if isinstance(result, str):
-        search_queries = json.loads(result)
+        # Try to find JSON in the response
+        text = result.strip()
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(text[start:end+1])
+            except json.JSONDecodeError:
+                parsed = {}
+        else:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = {}
     else:
-        search_queries = result
+        parsed = result
+    
+    # Handle both formats: direct array or {"queries": [...]}
+    if isinstance(parsed, dict) and "queries" in parsed:
+        search_queries = parsed["queries"]
+    elif isinstance(parsed, list):
+        search_queries = parsed
+    else:
+        search_queries = []
+    
+    # Handle case where queries are objects with "query" key instead of strings
+    cleaned_queries = []
+    for q in search_queries:
+        if isinstance(q, dict) and "query" in q:
+            cleaned_queries.append(q["query"])
+        elif isinstance(q, str):
+            cleaned_queries.append(q)
+    search_queries = cleaned_queries
+    logger.info(f"Expanded queries: {search_queries}")
     
     # Fallback: if expansion fails, use original question
     if not search_queries or not isinstance(search_queries, list):
@@ -105,21 +125,24 @@ def expand_queries_node(state: AgentState) -> AgentState:
 
 def retrieve_node(state: AgentState) -> AgentState:
     """Retrieve relevant documents using expanded search queries."""
+    logger.info(f"Retrieving documents for queries: {state['search_queries']}")
     vectorstore = get_vectorstore()
-    # Use k=4 per query as specified
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    # Use k from config
+    retriever = vectorstore.as_retriever(search_kwargs={"k": config.expansion_top_k})
     
     all_docs = []
     seen_content = set()
     
     for query in state["search_queries"]:
         docs = retriever.invoke(query)
+        logger.debug(f"Query '{query}' returned {len(docs)} docs")
         for doc in docs:
             # Deduplicate by content
             if doc.page_content not in seen_content:
                 seen_content.add(doc.page_content)
                 all_docs.append(doc.page_content)
     
+    logger.info(f"Total unique docs retrieved: {len(all_docs)}")
     return {
         **state,
         "retrieved_docs": all_docs,
@@ -128,32 +151,74 @@ def retrieve_node(state: AgentState) -> AgentState:
 
 def mask_pii_node(state: AgentState) -> AgentState:
     """Extract PII using local LLM, then deterministically mask with Python."""
-    local_llm = OllamaLLM(model=config.local_llm_model, format="json")
+    # Don't use format="json" - it causes the model to output object format
+    # Instead, prompt explicitly asks for JSON array
+    logger.info(f"Masking PII for {len(state['retrieved_docs'])} docs")
+    local_llm = OllamaLLM(model=config.local_llm_model)
     
     # Combine retrieved docs
     context = "\n\n".join(state["retrieved_docs"])
     
+    # Build entity types list from config for prompt
+    entity_types = config.pii_entity_types
+    entity_types_str = ", ".join(entity_types)
+    
+    # Use config for token format
+    token_format = config.pii_token_format  # e.g., "[{TYPE}_{N}]"
+    
     prompt = ChatPromptTemplate.from_template(PII_EXTRACTION_PROMPT)
     chain = prompt | local_llm
     
-    result = chain.invoke({"context": context})
+    result = chain.invoke({
+        "context": context,
+        "entity_types": entity_types_str,
+    })
+    logger.debug(f"PII extraction raw result: {result[:500] if isinstance(result, str) else result}")
     
-    # Parse extracted PII list - handle different formats
+    # Parse JSON array of objects with "value" and "type"
+    pii_list = []
     import json
     if isinstance(result, str):
-        pii_list = json.loads(result)
+        text = result.strip()
+        # Try to find JSON array in the response
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            json_text = text[start:end+1]
+            try:
+                parsed = json.loads(json_text)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict) and "value" in item and "type" in item:
+                            value = item["value"].strip() if isinstance(item["value"], str) else str(item["value"]).strip()
+                            ptype = item["type"].strip().upper() if isinstance(item["type"], str) else str(item["type"]).strip().upper()
+                            # Validate type is in configured entity types
+                            if value and ptype and ptype in entity_types:
+                                pii_list.append({"value": value, "type": ptype})
+            except json.JSONDecodeError:
+                pass
     else:
-        # Already parsed (format="json" may return dict)
-        pii_list = result
+        # Already parsed list
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict) and "value" in item and "type" in item:
+                    value = item["value"].strip() if isinstance(item["value"], str) else str(item["value"]).strip()
+                    ptype = item["type"].strip().upper() if isinstance(item["type"], str) else str(item["type"]).strip().upper()
+                    if value and ptype and ptype in entity_types:
+                        pii_list.append({"value": value, "type": ptype})
     
-    # Normalize: handle both [{"value": "...", "type": "..."}] and ["...", "..."]
+    # Deduplicate by value (keep first occurrence with its type)
+    seen = set()
     normalized_pii = []
     for pii in pii_list:
-        if isinstance(pii, dict) and "value" in pii and "type" in pii:
+        value = pii["value"]
+        if value not in seen:
+            seen.add(value)
             normalized_pii.append(pii)
-        elif isinstance(pii, str):
-            # Try to infer type from string pattern
-            normalized_pii.append({"value": pii, "type": infer_pii_type(pii)})
+    
+    logger.info(f"PII detected: {len(normalized_pii)} entities")
+    for pii in normalized_pii:
+        logger.debug(f"  {pii['type']}: {pii['value']}")
     
     # Deterministically assign placeholders and build mapping
     pii_map = {}
@@ -166,7 +231,9 @@ def mask_pii_node(state: AgentState) -> AgentState:
         
         # Increment counter for this type
         type_counters[ptype] = type_counters.get(ptype, 0) + 1
-        token = f"[{ptype}_{type_counters[ptype]}]"
+        
+        # Build token using config format
+        token = token_format.format(TYPE=ptype, N=type_counters[ptype])
         
         # Map token to original value
         pii_map[token] = value
@@ -183,31 +250,40 @@ def mask_pii_node(state: AgentState) -> AgentState:
 
 def cloud_synthesis_node(state: AgentState) -> AgentState:
     """Send masked context to cloud LLM for answer synthesis."""
-    # Use Google Gemini, NVIDIA, or OpenAI
-    if os.getenv("GEMINI_API_KEY"):
-        gemini_config = config.get("cloud_providers.gemini", {})
-        cloud_llm = ChatGoogleGenerativeAI(
-            model=gemini_config.get("model", "gemini-1.5-flash"),
-            google_api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0,
-        )
-    elif os.getenv("NVIDIA_API_KEY"):
-        from langchain_openai import ChatOpenAI
-        nvidia_config = config.get("cloud_providers.nvidia", {})
-        cloud_llm = ChatOpenAI(
-            model=nvidia_config.get("model", "nvidia/nemotron-3-ultra-550b-a55b"),
-            api_key=os.getenv("NVIDIA_API_KEY"),
-            base_url=nvidia_config.get("base_url", "https://integrate.api.nvidia.com/v1"),
-            temperature=0,
-        )
-    else:
-        from langchain_openai import ChatOpenAI
-        cloud_llm = ChatOpenAI(
-            model=config.get("cloud_providers.openai.model", "gpt-4o-mini"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            temperature=0,
-        )
+    logger.info("Synthesizing answer with cloud LLM")
+    # Use cloud provider priority from config
+    cloud_provider = None
+    cloud_llm = None
     
+    for provider in config.cloud_provider_priority:
+        provider_config = config.get(f"cloud_providers.{provider}", {})
+        api_key_env = provider_config.get("api_key_env")
+        
+        if api_key_env and os.getenv(api_key_env):
+            cloud_provider = provider
+            
+            if provider == "gemini":
+                cloud_llm = ChatGoogleGenerativeAI(
+                    model=provider_config.get("model"),
+                    google_api_key=os.getenv(api_key_env),
+                    temperature=provider_config.get("temperature", 0),
+                )
+            elif provider in ["nvidia", "openai"]:
+                from langchain_openai import ChatOpenAI
+                cloud_llm = ChatOpenAI(
+                    model=provider_config.get("model"),
+                    api_key=os.getenv(api_key_env),
+                    base_url=provider_config.get("base_url"),
+                    temperature=provider_config.get("temperature", 0),
+                )
+            break
+    
+    if cloud_llm is None:
+        raise RuntimeError("No cloud API key found. Configure one of: " + ", ".join(
+            config.get(f"cloud_providers.{p}.api_key_env") for p in config.cloud_provider_priority
+        ))
+    
+    logger.info(f"Using cloud provider: {cloud_provider}")
     prompt = ChatPromptTemplate.from_template(CLOUD_SYNTHESIS_PROMPT)
     chain = prompt | cloud_llm
     
@@ -222,6 +298,7 @@ def cloud_synthesis_node(state: AgentState) -> AgentState:
     else:
         cloud_answer = result.content
     
+    logger.info(f"Cloud answer received ({len(cloud_answer)} chars)")
     return {
         **state,
         "cloud_answer": cloud_answer,
@@ -230,6 +307,7 @@ def cloud_synthesis_node(state: AgentState) -> AgentState:
 
 def deanonymize_node(state: AgentState) -> AgentState:
     """Deterministically restore PII tokens in the answer using Python."""
+    logger.info("De-anonymizing answer")
     masked_answer = state["cloud_answer"]
     pii_map = state["pii_map"]
     
@@ -241,12 +319,15 @@ def deanonymize_node(state: AgentState) -> AgentState:
     for token in sorted_tokens:
         final_answer = final_answer.replace(token, pii_map[token])
     
+    logger.info(f"Restored {len(pii_map)} PII tokens")
     # Build privacy audit info
     privacy_audit = {
         "pii_detected": list(pii_map.values()),
         "tokens_used": list(pii_map.keys()),
         "masking_model": config.local_llm_model,
         "cloud_model": config.cloud_llm_model,
+        "search_queries": state.get("search_queries", []),
+        "num_chunks_retrieved": len(state.get("retrieved_docs", [])),
     }
     
     return {
